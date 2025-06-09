@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AU-ROC vs. AU-PRC for Imbalanced Data</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .chart-container { position: relative; height: 350px; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">Why a High AU-ROC Can Be Misleading</h1>
+            <p class="mt-2 text-lg text-gray-600">An interactive demonstration of how class imbalance affects model evaluation.</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-xl font-semibold mb-4">Simulation Controls</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+                <div>
+                    <label for="positives" class="block text-sm font-medium text-gray-700">Positive Samples (Patients with Disease)</label>
+                    <input type="number" id="positives" value="100" class="mt-1 block w-full bg-gray-200 rounded-md border-gray-300 shadow-sm" disabled>
+                </div>
+                <div>
+                    <label for="negatives-slider" class="block text-sm font-medium text-gray-700">Negative Samples (Healthy Patients)</label>
+                    <input type="range" id="negatives-slider" min="100" max="10000" step="100" value="100" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                    <span id="negatives-value" class="text-sm font-semibold text-indigo-600">100</span>
+                </div>
+                <div class="text-center md:text-left">
+                     <p class="text-sm font-medium text-gray-700">Class Imbalance Ratio:</p>
+                     <p id="imbalance-ratio" class="text-2xl font-bold text-indigo-600">1 : 1</p>
+                </div>
+            </div>
+             <p class="text-xs text-gray-500 mt-4">This simulation uses a mock model that is intentionally imperfect. Its ability to separate classes does not change. Only the number of negative samples changes.</p>
+        </div>
+
+        <!-- Charts and Explanations -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- AU-ROC Card -->
+            <div class="bg-white p-6 rounded-xl shadow-lg">
+                <h3 class="text-2xl font-bold text-center">AU-ROC: The Optimistic View</h3>
+                <div class="chart-container mt-4"><canvas id="rocChart"></canvas></div>
+                <div id="au-roc-score" class="text-center text-3xl font-bold mt-4"></div>
+                <div class="mt-4 text-sm text-gray-600 space-y-2">
+                    <p><strong class="text-gray-900">What it shows:</strong> The trade-off between finding true positives (Sensitivity) and avoiding false alarms on negatives (1 - Specificity).</p>
+                    <p><strong class="text-red-600">The Problem:</strong> When negatives vastly outnumber positives, a model can generate many false alarms (FP) without significantly hurting its False Positive <strong class="underline">Rate</strong>. The AU-ROC score remains high, masking the poor real-world performance.</p>
+                </div>
+            </div>
+            <!-- AU-PRC Card -->
+            <div class="bg-white p-6 rounded-xl shadow-lg">
+                <h3 class="text-2xl font-bold text-center">AU-PRC: The Realistic View</h3>
+                <div class="chart-container mt-4"><canvas id="prcChart"></canvas></div>
+                <div id="au-prc-score" class="text-center text-3xl font-bold mt-4"></div>
+                <div class="mt-4 text-sm text-gray-600 space-y-2">
+                    <p><strong class="text-gray-900">What it shows:</strong> The trade-off between Precision (the % of positive predictions that are correct) and Recall (the % of actual positives found).</p>
+                    <p><strong class="text-green-600">The Benefit:</strong> Precision (TP / (TP + FP)) is directly hurt by false positives (FP). As you increase the healthy patient pool, the number of false positives grows, <strong class="underline">crushing precision</strong>. The AU-PRC score plummets, accurately reflecting the model's poor performance for screening.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const rocCtx = document.getElementById('rocChart').getContext('2d');
+        const prcCtx = document.getElementById('prcChart').getContext('2d');
+        let rocChart, prcChart;
+
+        function generateData(numPositives, numNegatives) {
+            // Model that is better than random, but not perfect
+            // Positive class scores are generally higher
+            const positiveScores = Array.from({ length: numPositives }, () => Math.random() * 0.5 + 0.45); // Centered around 0.7
+            // Negative class scores are generally lower
+            const negativeScores = Array.from({ length: numNegatives }, () => Math.random() * 0.5 + 0.05); // Centered around 0.3
+
+            const y_true = Array(numPositives).fill(1).concat(Array(numNegatives).fill(0));
+            const y_scores = positiveScores.concat(negativeScores);
+            return { y_true, y_scores };
+        }
+
+        function calculateCurves(y_true, y_scores) {
+            const pairs = y_true.map((truth, i) => ({ truth, score: y_scores[i] }));
+            pairs.sort((a, b) => b.score - a.score);
+
+            let rocPoints = [{ x: 0, y: 0 }];
+            let prcPoints = [{ x: 0, y: 1 }]; // Start with recall 0, precision 1
+
+            let tp = 0, fp = 0;
+            const totalPositives = y_true.filter(y => y === 1).length;
+            const totalNegatives = y_true.length - totalPositives;
+
+            let lastRecall = 0;
+
+            pairs.forEach(pair => {
+                if (pair.truth === 1) tp++;
+                else fp++;
+
+                const recall = totalPositives > 0 ? tp / totalPositives : 0;
+                const precision = (tp + fp) > 0 ? tp / (tp + fp) : 1;
+                
+                if (recall > lastRecall) {
+                     prcPoints.push({ x: recall, y: precision });
+                     lastRecall = recall;
+                }
+                
+                const fpr = totalNegatives > 0 ? fp / totalNegatives : 0;
+                const tpr = recall; // same as recall
+                rocPoints.push({ x: fpr, y: tpr });
+            });
+            
+            prcPoints.push({x: 1, y: totalPositives / y_true.length});
+
+            return { rocPoints, prcPoints };
+        }
+        
+        function calculateAUC(points) {
+             let area = 0;
+             for (let i = 1; i < points.length; i++) {
+                 area += (points[i].x - points[i-1].x) * (points[i].y + points[i-1].y) / 2;
+             }
+             return area;
+        }
+
+        function drawChart(chartInstance, ctx, points, label, xLabel, yLabel, color) {
+            if (chartInstance) {
+                chartInstance.destroy();
+            }
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: label,
+                        data: points,
+                        borderColor: color,
+                        backgroundColor: `${color}33`, // with opacity
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            min: 0,
+                            max: 1,
+                            title: { display: true, text: xLabel }
+                        },
+                        y: {
+                            type: 'linear',
+                            min: 0,
+                            max: 1,
+                            title: { display: true, text: yLabel }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+        
+        function update() {
+            const numPositives = parseInt(document.getElementById('positives').value);
+            const numNegatives = parseInt(document.getElementById('negatives-slider').value);
+            
+            document.getElementById('negatives-value').textContent = numNegatives;
+            document.getElementById('imbalance-ratio').textContent = `1 : ${Math.round(numNegatives / numPositives)}`;
+
+            const { y_true, y_scores } = generateData(numPositives, numNegatives);
+            const { rocPoints, prcPoints } = calculateCurves(y_true, y_scores);
+            
+            const au_roc = calculateAUC(rocPoints);
+            const au_prc = calculateAUC(prcPoints);
+
+            rocChart = drawChart(rocChart, rocCtx, rocPoints, 'ROC Curve', 'False Positive Rate', 'True Positive Rate (Recall)', '#EF4444');
+            prcChart = drawChart(prcChart, prcCtx, prcPoints, 'PR Curve', 'Recall', 'Precision', '#3B82F6');
+            
+            document.getElementById('au-roc-score').textContent = `AU-ROC: ${au_roc.toFixed(3)}`;
+            document.getElementById('au-roc-score').className = 'text-center text-3xl font-bold mt-4 text-red-500';
+
+            const prcScoreEl = document.getElementById('au-prc-score');
+            prcScoreEl.textContent = `AU-PRC: ${au_prc.toFixed(3)}`;
+            let prcColor = 'text-blue-500';
+            if(au_prc < 0.5) prcColor = 'text-yellow-500';
+            if(au_prc < 0.2) prcColor = 'text-gray-500';
+            prcScoreEl.className = `text-center text-3xl font-bold mt-4 ${prcColor}`;
+        }
+
+        document.getElementById('negatives-slider').addEventListener('input', update);
+
+        // Initial draw
+        update();
+    </script>
+</body>
+</html>
